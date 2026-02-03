@@ -243,6 +243,11 @@ nd
 
 ```{r mod1 better final plot}
 # Creating predictions
+
+nd <- reg_dfw %>%
+  summarise(sr_ksha = seq(min(sr_ksha), max(sr_ksha), length.out = 100)) %>%
+  tidyr::unnest(sr_ksha)
+
 nd <- nd %>%
   mutate(mod1_yield_mgha = predict(mod1_int,
                                    nd,
@@ -398,6 +403,11 @@ Solution:
 
 ```{r mod2 better final plot}
 # Creating predictions
+
+nd <- reg_dfw %>%
+  summarise(sr_ksha = seq(min(sr_ksha), max(sr_ksha), length.out = 100)) %>%
+  tidyr::unnest(sr_ksha)
+
 nd <- nd %>%
   mutate(mod2_yield_mgha = predict(mod2_lin, 
                                    nd, 
