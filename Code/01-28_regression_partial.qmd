@@ -62,19 +62,18 @@ library(lmerTest) # for mixed-effect modeling
 library(broom.mixed) # for residual diagnostics
 library(knitr) # for figure displaying
 library(nlme) # for non-linear modeling
-library(car)
+library(car) # for regression diagnostics
 library(nlraa) # for starting value functions
-library(metrica) # for rmse
+library(metrica) # for RMSE
 
 ```
 
 Reading data and doing some light wrangling.  
 ```{r}
-
 #| message: false
 reg_dfw <- read.csv("../Data/02_reg.csv") %>%
-  janitor::clean_names() %>% # clean_names() standardize uppercase, lowercase, and the like.
-  mutate(rep = as.factor(rep)) # <dbl> represents number, but rep is not numeric (rep 4 dos not mean double of rep 2), so we want to change it to factor <fctr>.
+  janitor::clean_names() %>% # clean column names.
+  mutate(rep = as.factor(rep)) # <dbl> represents number, but rep is not numeric (rep 4 doesn't mean double of rep 2), so we want to change it to factor <fctr>.
 
 reg_dfw
 
@@ -92,10 +91,10 @@ The treatment factor is seeding rate (in 1,000 seeds per ha) with five levels:
 The response variable was corn yield in Mg/ha.  
 
 
-# 2) EDA  
+# 2) EDA (Exploratory Data Analysis)  
 ```{r summary}
 
-summary(reg_dfw)
+summary(reg_dfw) # summary(): display statistics for each column.
 
 ```
 Yield ranging from 7.8 to 15.6 Mg/ha.  
@@ -103,7 +102,7 @@ Yield ranging from 7.8 to 15.6 Mg/ha.
 ```{r reg exp boxplot}
 
 ggplot(data = reg_dfw,
-       aes(x = sr_ksha,
+       aes(x = sr_ksha, # aes = aesthetics
            y = yield_mgha)) + 
   geom_boxplot()
 
@@ -119,7 +118,7 @@ ggplot(reg_dfw,
        aes(x = sr_ksha, 
            y = yield_mgha)) +
   geom_point() +
-  geom_smooth()
+  geom_smooth() # Add a "smooth curve"
 
 ```
 
@@ -135,33 +134,53 @@ Our goal is to then use that model to estimate the optimum seeding rate for this
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod1_int <- lmer(yield_mgha ~ 1 + (1 | rep),
-                 data = reg_dfw) # 1 = only intercept + random effect coming from blocks
-
+mod1_int <- lmer(yield_mgha ~ 1 + (1 | rep), # yield = a constant (intercept) + random effect coming from blocks
+                 data = reg_dfw) # Output fluctuates around a "average output", ignoring the effect of seeding rate.
 # Summary
 summary(mod1_int)
 
+# (1 | rep) = random intercept model: yij =β0 + b0j + β1*xij + εij, β₀ is the population mean intercept (fixed effects), b₀ⱼ is the intercept offset (random effect) of the j-th rep.
+
+# (temp | rep) = random slope model: Each rep has a different intercept, even the slope of temperature can be different. y=(β0 + b0j)+(β1 + b1j)*x, Each rep has its own line with a different slope.
+
 ```
+Random effects:
+rep那行: 不同 rep 之间的“平均产量基线”是有波动的，方差是 0.28。
+Residual那行：这是同一个 rep 内部、观测值之间的随机误差，也就是“个体层面”的波动。
+rep 之间的变异 ≈ 0.28，同一 rep 内部的变异 ≈ 4.25。说明：大部分波动来自样本内部，而不是不同 rep 之间。
+
+Fixed effects:
+这个 12.17 是在考虑了 rep 之间随机差异之后得到的总体均值。
+这个 p 值是在检验“平均值是否显著不等于 0”。在实际农业问题里这个检验意义不大，因为产量本来就不可能是 0。
+
 
 ## b) Model Assumptions
 ```{r mod1 augmenting}
 
 # Augmenting and adding perason standardized residuals
 
-mod1_int_aug <- augment(mod1_int) %>%
-  mutate(.stdresid = resid(mod1_int,
-                           type = "pearson",
-                           scaled = T
-                           )) %>% # add standardized residual
-  left_join(reg_dfw)
+mod1_int_aug <- augment(mod1_int) %>% # augment()把“模型结果按观测展开”。
+  # 新增一列“标准化残差”：用于比较。
+  mutate(.stdresid = resid(mod1_int, # resid() 从模型里提取原始残差，原始残差，有单位。
+                           type = "pearson", # Pearson残差 = 原始残差 ÷ 估计标准差，无单位
+                           scaled = T # 进一步标准化后的残差
+                           )) %>% 
+  left_join(reg_dfw) # augment得到的数据只保证有模型相关列。left_join() 按行匹配，把 reg_dfw 里的变量加到当前数据框里。left_join 负责把“原始实验信息”加回来方便画图解释
   
 mod1_int_aug
+
+
+# .resid：原始残差 = 真实值 − 预测值； .fitted：模型预测值
+# 真实观测值：y = Xβ + Zb + 误差。模型预测值：.fitted = Xβ + Zb。
+# .fixed = Xβ。β 是固定效应参数，比如截距、斜率，Xβ 是“固定效应部分算出来的预测值”
 
 ```
 
 ### Within-group errors are iid ~ N(0, var2)
 
 ```{r mod1 Standardized Residuals vs. Fitted}
+
+# To check standardized residuals vs. Fitted.
 
 ggplot(mod1_int_aug,
        aes(x = .fitted,
@@ -183,10 +202,12 @@ For now, let's keep going.
 
 ```{r mod1 Quantile-Quantile}
 
+# To check if the residuals are normally distributed.
+
 ggplot(mod1_int_aug,
-       aes(sample = .stdresid)) +
-  stat_qq() +
-  stat_qq_line()
+       aes(sample = .stdresid)) + # 我的样本数据是哪列？
+  stat_qq() + # 把.stdresid从小到大排序，生成同样数量的“理论正态分位数”，画理论值对样本值的点图
+  stat_qq_line() # 加上一条参考直线
 
 ```
 Some deviations at the tails, not too bad.  
@@ -196,13 +217,15 @@ Some deviations at the tails, not too bad.
 On this plot, looking for normality.
 
 ```{r mod1 QQ plot for Location:fRep random effects}
+# To check if the random effects are normally distributed.
 
-mod1_int_randeff <- ranef(mod1_int) [[1]]
+mod1_int_randeff <- ranef(mod1_int) [[1]] # why [[1]]? 因为 ggplot 需要的是一个数据框，而不是一个“列表里装着数据框”的结构。
+# ranef(mod1_int)：列表；ranef(mod1_int) [[1]]：数据框，即取列表里的第一个元素，即rep，里的数据。
 
 mod1_int_randeff
 
 ggplot(mod1_int_randeff,
-       aes(sample = `(Intercept)` )) +
+       aes(sample = `(Intercept)` )) + # `(...)`: 列名有括号，必须用反引号包起来, ` backtick, ' single quote
   stat_qq() +
   stat_qq_line()
 
@@ -245,44 +268,43 @@ First, let's create an data set with all levels of seeding rate we want to get a
 
 nd <- data.frame(sr_ksha = seq(40, 120, 1))
 
-nd
+nd # 只有一列，只是一个“播种量列表”，还没有任何预测结果。
 
 ```
 
 ```{r mod1 better final plot}
 # Creating predictions
 
-# nd <- reg_dfw %>% 
-# summarise(sr_ksha = seq(min(sr_ksha), max(sr_ksha), length.out = 100)) 
-# %>% tidyr::unnest(sr_ksha)
-
-nd <- nd %>%
-  mutate(mod1_yield_mgha = predict(mod1_int,
+nd <- nd %>% # 把 nd 自己更新成“带新列的 nd”，nd现在是“播种量 + 模型预测产量”，2列。
+  mutate(mod1_yield_mgha = predict(mod1_int, # 用模型 mod1_int 在新数据 nd 上做预测。
                                    nd,
-                                   re.form = NA
-                                   ))
+                                   re.form = NA # 预测时不加随机效应，只用固定效应，因为这是“只有截距”的模型，预测值全部一样
+                                   )) 
 
 # Creating function to bootstrap
-predict.fun <- function(mod) {
-  predict(mod, 
-          newdata = nd, 
+predict.fun <- function(mod) { # 定义一个函数，名字叫 predict.fun。
+  predict(mod, # mod是模型输入，代表“一次 bootstrap 重新拟合出来的模型”
+          newdata = nd, # 在同样的 x轴序列 nd 上算一条新的预测线
           re.form = NA)
 }
 
 # Bootstrapping for confidence interval
-mod1_int_boots <- bootMer(mod1_int,
+
+# bootMer 是对混合模型做 bootstrap 的函数。每一次循环做三件事：① 根据当前模型的误差结构模拟出一份“新的假想数据”，② 用这份新数据重新拟合模型，得到一组“稍微不一样”的参数，③ 用你的 predict.fun，在同样的 x轴序列 nd 上算一条新的预测线
+
+mod1_int_boots <- bootMer(mod1_int, # mod1_int = 模型参数 + 原始数据 + 模型结构
                           predict.fun,
-                          nsim = 200
+                          nsim = 200 # repeat for 200 times
                           ) %>%
-  confint() %>%
-  as.data.frame() %>%
+  confint() %>% # 这里通常会给出每个预测点的 2.5% 和 97.5% 分位数，也就是 95% 区间上下界。
+  as.data.frame() %>% # 把结果转成 data frame，方便后面合并和改列名。
   rename(mod1_int_lcl = `2.5 %`,
-         mod1_int_ucl = `97.5 %`)
+         mod1_int_ucl = `97.5 %`) # 原来的列名是 2.5 % 和 97.5 %，写代码不方便，所以改名。
 
 mod1_int_boots # 81 rows because we have 81 rows from 40 to 120 with 1 as interval
 
 nd <- nd %>%
-  bind_cols(mod1_int_boots)
+  bind_cols(mod1_int_boots) # 把 bootstrap 得到的两列区间上下界，拼到 nd 右边。bind_cols() 的要求是：两个数据框行数必须一样。
 
 nd
 
@@ -414,10 +436,6 @@ Solution:
 
 ```{r mod2 better final plot}
 # Creating predictions
-
-# nd <- reg_dfw %>%
-# summarise(sr_ksha = seq(min(sr_ksha), max(sr_ksha), length.out = 100)) %>%
-# tidyr::unnest(sr_ksha)
 
 nd <- nd %>%
   mutate(mod2_yield_mgha = predict(mod2_lin, 
@@ -622,13 +640,13 @@ options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
 mod4_linp <- nlme(yield_mgha ~ SSlinp(sr_ksha,
-                                      a, b, xs), # a is intercept, b is the slope, the break point
+                                      a, b, xs), # a is intercept, b is the slope of the linearly ascending portion, xs is the truning point.
                   data = reg_dfw,
-                  random = list(rep = pdDiag(a + b + xs ~ 1)),
-                  fixed = list(a ~ 1,
-                               b ~ 1,
+                  random = list(rep = pdDiag(a + b + xs ~ 1)), # 这是混合效应部分，意思是：不同区组 rep 允许有不同的 a b xs。
+                  fixed = list(a ~ 1, # 这是固定效应部分，也就是总体层面的参数，a ~ 1 表示 a 在总体上是一个常数，需要估计一个总体 a
+                               b ~ 1, # 如果你把某个参数写成 a ~ treatment，那就表示 a 会随某个处理变化。这里没有这样做，所以都是常数。
                                xs ~ 1),
-                  start = c(a = 0,
+                  start = c(a = 0, # 这是给非线性拟合提供“初始值”。这些值不要求准确，只要别太离谱，让算法能开始跑。
                             b = 0.3,
                             xs = 100
                             )
@@ -678,13 +696,13 @@ On this plot, looking for normality.
 
 ```{r mod4 QQ plot for Rep random effect}
 mod4_linp_randeff <- ranef(mod4_linp) %>%
-  as.data.frame()
+  as.data.frame() # ranef 的输出通常是一个带结构的对象，不一定是普通表格。as.data.frame() 把它转换成数据框，方便后面用 ggplot 画图。
 
 ggplot(mod4_linp_randeff, 
        aes(sample = estimate))+
   stat_qq()+
   stat_qq_line()+
-  facet_wrap(~term)
+  facet_wrap(~term) # facet_wrap 是把一张图拆成很多小图。意思是：按 term 这一列把图拆成多个小图，每个 term 一张. term是mod4_linp_randeff里的一个列
 
 ```
 b and xs random estimates are so small that seem to be all zero.  
@@ -723,9 +741,9 @@ Solutions:
 ```{r mod4 better final plot}
 # Creating predictions
 nd <- nd %>%
-  mutate(mod4_yield_mgha = predict(mod4_linp, 
-                                   nd, 
-                                   level = 0))  
+  mutate(mod4_yield_mgha = predict(mod4_linp, # 用模型 mod4_linp 在 nd 上做预测，预测结果放进新列 mod4_yield_mgha
+                                   nd, # nd是40:120:1
+                                   level = 0))  # level = 0 的意思是：只用固定效应，不加入随机效应
 
 # Non-linear prediction function  
 predict.fun.nl <- function(x) predict(x,
@@ -809,7 +827,10 @@ Because our best model was the linear-plateau, let's find its seeding rate that 
 ```{r optimum SR}
 
 mod4_linp %>%
-  intervals(which = "fixed")
+  intervals(which = "fixed") # 等价写法是：intervals(mod4_linp, which = "fixed")
+
+# intervals() 是 nlme 包里专门用来给模型参数算区间估计的函数，一般会输出：参数估计值 estimate；标准误 standard error；置信区间下限和上限
+# which = "fixed" 的意思是：只输出固定效应参数的区间，也就是总体层面的 a b xs
 
 ```
 Based on the linear-plateau model, the level of seeding rate to optimize corn grain yield in this study was **73.47** thousand seeds/ha.  
@@ -818,8 +839,8 @@ Now let's predict what was the yield at that seeding rate.
 ```{r yield at optimum SR}
 
 predict(mod4_linp,
-        newdata = data.frame(sr_ksha = 73.48),
-        level = 0 # no random effect
+        newdata = data.frame(sr_ksha = 73.48), # 这里构造了一张“只有一行的新数据表”。
+        level = 0 # no random effect，这个预测是“总体平均水平”的产量，而不是某一个具体区组的产量。
         )
 
 ```
@@ -836,7 +857,7 @@ ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
                y = 0,
                yend = 13.45
                ) +
-  geom_segment(x = 40,
+  geom_segment(x = 30,
                xend = 73.48,
                y = 13.45,
                yend = 13.45
